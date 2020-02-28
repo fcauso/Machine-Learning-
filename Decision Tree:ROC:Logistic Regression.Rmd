@@ -1,0 +1,262 @@
+---
+title: "Decision tree, ROC, Logistic Regression"
+author: "Fiara Causo"
+date: "11/11/2019"
+output: pdf_document
+---
+
+```{r}
+library(tidyverse)
+library(ROCR)
+library(tree)
+library(maptree)
+library(class)
+library(lattice)
+library(ggridges)
+library(superheat)
+```
+
+Loading the data
+```{r}
+drug_use <- read_csv('drug.csv',
+col_names = c('ID','Age','Gender','Education','Country','Ethnicity',
+'Nscore','Escore','Oscore','Ascore','Cscore','Impulsive',
+'SS','Alcohol','Amphet','Amyl','Benzos','Caff','Cannabis',
+'Choc','Coke','Crack','Ecstasy','Heroin','Ketamine',
+'Legalh','LSD','Meth','Mushrooms','Nicotine','Semer','VSA'))
+print(drug_use)
+
+#transform gender, ethnicity, and country to factors, 
+#and the drug response variables as ordered factors 
+drug_use <- drug_use %>% 
+  mutate_at(as.ordered, .vars=vars(Alcohol:VSA))
+
+drug_use <- drug_use %>%
+  mutate(Gender = factor(Gender, labels=c("Male", "Female"))) %>%
+  mutate(Ethnicity = factor(Ethnicity, labels=c("Black", "Asian", "White",
+                                                "Mixed:White/Black", "Other",
+                                                "Mixed:White/Asian",
+                                                "Mixed:Black/Asian"))) %>%
+  mutate(Country = factor(Country, labels=c("Australia", "Canada", "New Zealand",
+                                            "Other", "Ireland", "UK", "USA")))
+```
+1. Logistic Regression
+if cannabis within a year then yes othw no
+If greater than CL3 then yes 
+```{r}
+drug_use <- drug_use %>%
+  mutate(recent_cannabis_use=factor(ifelse(Cannabis >= "CL3", "Yes", "No"),
+                                    levels=c("No", "Yes")))
+```
+b)
+```{r}
+drug_use_subset <- drug_use %>% select(Age:SS, recent_cannabis_use)
+#split the data in tran and test data
+train_index <- sample(nrow(drug_use_subset), 1500)
+drug_use_train <- drug_use_subset[train_index,]
+drug_use_test <- drug_use_subset[-train_index, ]
+print(drug_use_train)
+#true labels of the test cases 
+cannibis.test = drug_use_test$recent_cannabis_use
+```
+
+C) Fit a logistic regression to model recent_cannabis_use as a function of all other predictors in drug_use_train. 
+Fit this regression using the training data only. 
+Display the results by calling the summary function on the logistic regression object.
+
+```{r}
+logreg_cannabis <- glm(recent_cannabis_use ~., data = drug_use_train, family = binomial)
+summary(logreg_cannabis)
+```
+
+2) Decision Tree models of drug use 
+Construct a decision tree to predict recent_cannabis_use using all other predictors in drug_use_train.
+Set the value of the argument control = tree_parameters where tree_parameters are:
+```{r}
+tree_parameters = tree.control(nobs=nrow(drug_use_train), minsize=10, mindev=1e-3)
+```
+
+```{r}
+tree.cannabis = tree(recent_cannabis_use ~. , data = drug_use_train, control = tree_parameters)
+draw.tree(tree.cannabis, nodeinfo = FALSE,cex=0.2)
+```
+a) Use 10-fold CV to select the a tree which minimizes the cross-validation misclassification rate. 
+Use the function cv.tree, and set the argument FUN=prune.misclass. 
+Note: you do not need to use a do.chunk
+function since the tree package will do cross validation for you. Find the size of the tree which minimizes the cross validation error. If multiple trees have the same minimum cross validated misclassification rate, set
+best_size to the smallest tree size with that minimum rate.
+
+```{r}
+set.seed(1)
+cv_fold <-cv.tree(tree.cannabis, FUN = prune.misclass, K=10)
+cv_fold
+best.cv = cv_fold$size[which.min(cv_fold$dev)]
+best.cv
+best_size = 8
+```
+
+(b).Prune the tree to the size found in the previous part and plot the tree using the draw.tree function
+from the maptree package. Set nodeinfo=TRUE. Which variable is split first in this decision tree?
+
+```{r}
+pruned.drugtree <- prune.tree(tree.cannabis, best = best_size)
+draw.tree(prune.tree(tree.cannabis, best=best_size), nodeinfo=TRUE,cex=0.6)
+title("Classification Tree Cannabis")
+```
+
+c)
+Compute and print the confusion matrix for the test data using the function table(truth,predictions) where truth and predictions are the true classes and the predicted classes from the tree model respectively. 
+Note: when generated the predicted classes for the test data, set type="class" in the predict function. 
+Calculate the true positive rate (TPR) and false positive rate (FPR) for the confusion matrix. Show how you arrived at your answer.
+
+```{r}
+# Predict on test set
+tree.pred = predict(pruned.drugtree, drug_use_test, type="class") 
+tree.pred
+#confusion matrix
+ # Obtain confusion matrix
+error = table(tree.pred, cannibis.test) 
+error
+TPR = (126 / (126+59))
+round(TPR, digits = 2)
+FPR = (42 / (42+158))
+round(FPR, digits = 2)
+```
+3. Model Comparison
+a) Plot the ROC curves for both the logistic regression fit 
+and the decision tree on the same plot. 
+Use drug_use_test to compute the ROC curves for both the logistic regression model and the best pruned tree model.
+
+```{r}
+#logistic
+prob.training.drug = predict(logreg_cannabis,type = 'response')
+pred = prediction(prob.training.drug, drug_use_train$recent_cannabis_use)
+perf.glm = performance(pred, measure = "tpr", x.measure = "fpr")
+#tree
+prob.training.tree = predict(pruned.drugtree, drug_use_train, type = 'class')
+pred.tree = prediction(as.numeric(prob.training.tree),                       as.numeric(drug_use_train$recent_cannabis_use))
+perf.tree = performance(pred.tree, measure = "tpr", x.measure = "fpr")
+
+#Plot the tree
+plot(perf.glm, col = "pink", lwd = 3, main="ROC CURVE")
+plot(perf.tree, col="purple", lwd=3, add = TRUE)
+legend(.8, .2, legend = c("GLM", "Tree"),
+       col = c("pink", "purple"), lwd=3, cex=0.8)
+abline(0,1)
+
+```
+
+(b). Compute the AUC for both models and print them. 
+Which model has larger AUC?
+```{r}
+auc.glm = performance(pred.tree, "auc")@y.values 
+auc.glm
+```
+```{r}
+#AUC for pruned tree
+auc.tree = performance(pred.tree, "auc")@y.values
+auc.tree
+```
+
+The logistic regression model appears to have a larger AUC
+
+
+4. Clustering and Dimension reduction for gene expression data
+```{r}
+leukemia_data <- read_csv("leukemia_data.csv")
+print(leukemia_data)
+
+```
+a)The class of the first column of leukemia_data, Type, is set to character by default. 
+Convert the Type column to a factor using the mutate function. 
+Use the table command to print the number of patients with each leukemia subtype. 
+Which leukemia subtype occurs the least in this data?
+
+```{r}
+#convert the type colum into a factor
+leukemia_data <- leukemia_data %>%
+  mutate(Type = factor(Type))
+#Use the table command to print the number of patients with each 
+#leukemia subtype
+table(leukemia_data$Type)
+```
+
+(b). 
+Run PCA on the leukemia data using prcomp function with scale=TRUE and center=TRUE 
+(this scales each gene to have mean 0 and variance 1). 
+Make sure you exclude the Type column when you run the PCA
+function (we are only interested in reducing the dimension of the gene expression values and PCA doesn’t work with categorical data anyway). 
+Plot the proportion of variance explained by each principal component(PVE) and the cumulative PVE side-by-side.
+```{r}
+pr.scale = prcomp(leukemia_data[,-1], scale=TRUE, center=TRUE)
+pr.var = pr.scale$sdev^2
+pve <- pr.var/sum(pr.var)
+cumulative_pve <- cumsum(pve)
+## This will put the next two plots side by side
+par(mfrow=c(1, 2))
+## Plot proportion of variance explained
+plot(pve, type="l", lwd=3)
+plot(cumulative_pve, type="l", lwd=3)
+
+```
+
+(c). Use the results of PCA to project the data into the first two principal component dimensions. 
+prcomp returns this dimension reduced data in the first columns of x. 
+Plot the data as a scatter plot using plot
+function with col=plot_colors where plot_colors is defined
+
+```{r}
+rainbow_colors <- rainbow(7)
+plot_colors <- rainbow_colors[leukemia_data$Type]
+dim(pr.scale$x)
+```
+This will color the points according to the leukemia subtype. Add the leukemia type labels to the plot using text with labels argument set to the leukemia type and the col to plot_colors (it may help legibility to make the points on the plot very small by setting cex to a small number). Which group is most clearly separated from the others along the PC1 axis? Which genes have the highest absolute loadings for PC1 (the genes that have the largest weights in the weighted average used to create the new variable PC1)? You can find these by taking the absolute values of the first principal component loadings and sorting them. Print the first 6 genes in this sorted vector using the head function.
+
+```{r}
+plot(x=pr.scale$x[,1], y=pr.scale$x[,2], xlab="PC1", ylab="PC2", col=plot_colors, cex=.11)
+text(pr.scale$x, labels = leukemia_data$Type, col = plot_colors, cex = .70)
+
+```
+
+T-ALL is is the most separated from the others along the PC1 axis.
+```{r}
+absolute = abs(pr.scale$rotation[,1])
+head(sort(absolute, decreasing = TRUE), n=6)
+```
+SEMA3F, CCT2, LDHB, COX6C, SNRPD2, ELK3 are the genes that have the highest absolute loadings for PC1
+
+(f.) Use the filter command to create a new tibble leukemia_subset by subsetting to include only rows for which Type is either T-ALL, TEL-AML1, or Hyperdip50. 
+Compute a euclidean distance matrix between the subjects using the dist function and then run hierarchical clustering using complete linkage. 
+Plot two dendrograms based on the hierarchical clustering result. 
+In the first plot, force 3 leukemia types to be the labels of terminal nodes, color the branches and labels to have 3 groups and 
+rotate the dendrogram counter-clockwise to have all the terminal nodes on the right. 
+In the second plot, do all the same things except that this time color all the branches and labels to have 5 groups. 
+Please make sure library dendextend is installed. Hint: as.dendrogram, set_labels, color_branches, color_labels and plot(..., horiz =
+TRUE) may be useful.
+
+```{r}
+library(dendextend)
+```
+
+```{r}
+leukemia_subset <- filter(leukemia_data, Type == c("T-ALL", "TEL-AML1", "Hyperdip50"))
+d <-dist(leukemia_subset, method = "euclidean", diag = FALSE, upper = FALSE, p=3)
+hiarch <- hclust(d, method = "complete", members = NULL)
+dend <- as.dendrogram(hiarch)
+labels_colors(dend) <- 1:3
+dend1 = color_branches(dend, k=3)
+plot(dend1, horiz = TRUE)
+```
+
+```{r}
+d2 <- dist(leukemia_subset, method = "euclidean", diag = FALSE, upper = FALSE, p=5)
+hiarch2 <- hclust(d2, method = "complete", members = NULL)
+dend2 <- as.dendrogram(hiarch2)
+labels_colors(dend2) <- 1:5
+dend3 = color_branches(dend2, k=5)
+plot(dend3, horiz = TRUE)
+```
+
+
+
+
